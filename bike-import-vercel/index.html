@@ -1,0 +1,145 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<title>Bikemaster CSV Import Checker</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/PapaParse/5.4.1/papaparse.min.js"></script>
+<style>
+  body { font-family: system-ui, sans-serif; max-width: 900px; margin: 40px auto; padding: 0 16px; color: #222; }
+  h1 { font-size: 1.4rem; }
+  .card { border: 1px solid #ddd; border-radius: 8px; padding: 20px; margin-bottom: 20px; }
+  button { background: #1a73e8; color: white; border: none; padding: 10px 18px; border-radius: 6px; cursor: pointer; font-size: 0.95rem; }
+  button:disabled { background: #aaa; cursor: not-allowed; }
+  table { border-collapse: collapse; width: 100%; margin-top: 16px; font-size: 0.85rem; }
+  th, td { border: 1px solid #eee; padding: 6px 8px; text-align: left; }
+  th { background: #f7f7f7; }
+  .new { color: #1a7f37; font-weight: 600; }
+  .skip { color: #c0392b; font-weight: 600; }
+  #status { margin-top: 10px; font-size: 0.9rem; color: #555; }
+</style>
+</head>
+<body>
+
+<h1>Bikemaster CSV Import Checker</h1>
+
+<div class="card">
+  <p>Upload a delivery tracker CSV (1050 or Zeno format). It's checked against
+     <code>bikemaster</code>, and you'll get a ready-to-upload CSV of only the bikes
+     that don't already exist.</p>
+
+  <input type="file" id="csvFile" accept=".csv" />
+  <button id="processBtn" disabled>Check &amp; Prepare</button>
+  <div id="status"></div>
+</div>
+
+<div class="card" id="resultsCard" style="display:none;">
+  <div style="display:flex; justify-content:space-between; align-items:center;">
+    <div id="summary"></div>
+    <button id="downloadBtn">Download New Bikes CSV</button>
+  </div>
+  <table id="resultsTable"></table>
+</div>
+
+<script>
+// Relative path: this page and the API route are served by the same
+// Express app, so a relative URL works on whatever domain this ends
+// up deployed at (production, preview URLs, localhost, etc.) with no
+// per-deploy editing. No Supabase keys live here at all.
+const API_URL = '/api/prepare-bike-import';
+
+let selectedFile = null;
+let lastResults = [];
+
+document.getElementById('csvFile').addEventListener('change', (e) => {
+  selectedFile = e.target.files[0] || null;
+  document.getElementById('processBtn').disabled = !selectedFile;
+});
+
+// Turns whatever header names a given template uses into the generic
+// {reg_no, chassis, motor} shape the SQL function expects. Add more
+// candidate header names here if a new template shows up.
+function mapRow(rawRow) {
+  const get = (candidates) => {
+    for (const key of Object.keys(rawRow)) {
+      const k = key.trim().toLowerCase();
+      if (candidates.some((c) => k.includes(c))) return rawRow[key];
+    }
+    return '';
+  };
+  return {
+    reg_no: get(['reg no', 'registration plate', 'emara registration plate', 'reg. no']),
+    chassis: get(['chassis']),
+    motor: get(['motor', 'engine']),
+  };
+}
+
+document.getElementById('processBtn').addEventListener('click', () => {
+  if (!selectedFile) return;
+  const statusEl = document.getElementById('status');
+  statusEl.textContent = 'Parsing CSV...';
+
+  Papa.parse(selectedFile, {
+    header: true,
+    skipEmptyLines: true,
+    complete: async (parsed) => {
+      const rows = parsed.data.map(mapRow).filter((r) => r.reg_no);
+      statusEl.textContent = `Parsed ${rows.length} bikes. Checking against bikemaster...`;
+
+      try {
+        const res = await fetch(API_URL, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ rows, filename: selectedFile.name }),
+        });
+
+        const payload = await res.json();
+        if (!res.ok) throw new Error(payload.error || 'Request failed');
+        lastResults = payload;
+        renderResults(lastResults);
+        statusEl.textContent = 'Done.';
+      } catch (err) {
+        statusEl.textContent = 'Error: ' + err.message;
+      }
+    },
+  });
+});
+
+function renderResults(results) {
+  const newCount = results.filter((r) => r.Status === 'NEW').length;
+  const skipCount = results.length - newCount;
+
+  document.getElementById('summary').textContent =
+    `${newCount} new bike(s) ready to import, ${skipCount} already exist and will be skipped.`;
+
+  const cols = ['Bike_Registration', 'BikeRegNoSpace', 'Bike_Subscription_Weeks',
+                'IsLTOBike', 'YOM', 'Make', 'Model', 'Chasis_Number', 'Engine_Number', 'Status'];
+
+  const table = document.getElementById('resultsTable');
+  table.innerHTML =
+    '<tr>' + cols.map((c) => `<th>${c}</th>`).join('') + '</tr>' +
+    results.map((r) => {
+      const cls = r.Status === 'NEW' ? 'new' : 'skip';
+      return '<tr>' + cols.map((c) => `<td class="${c === 'Status' ? cls : ''}">${r[c] ?? ''}</td>`).join('') + '</tr>';
+    }).join('');
+
+  document.getElementById('resultsCard').style.display = 'block';
+}
+
+document.getElementById('downloadBtn').addEventListener('click', () => {
+  const cols = ['Bike_Registration', 'BikeRegNoSpace', 'Bike_Subscription_Weeks',
+                'IsLTOBike', 'YOM', 'Make', 'Model', 'Chasis_Number', 'Engine_Number'];
+  const newRows = lastResults
+    .filter((r) => r.Status === 'NEW')
+    .map((r) => Object.fromEntries(cols.map((c) => [c, r[c] ?? ''])));
+
+  const csv = Papa.unparse(newRows, { columns: cols });
+  const blob = new Blob([csv], { type: 'text/csv' });
+  const link = document.createElement('a');
+  link.href = URL.createObjectURL(blob);
+  link.download = 'bikemaster_new_bikes.csv';
+  link.click();
+});
+</script>
+
+</body>
+</html>
