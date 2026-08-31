@@ -100,10 +100,12 @@
     </div>
 
     <script>
-        // ---- Configure these two for your project ----
-        const SUPABASE_URL = 'https://YOUR-PROJECT-REF.supabase.co';
-        const SUPABASE_ANON_KEY = 'YOUR-ANON-KEY';
-        // -----------------------------------------------
+        // ---- Only thing to configure: your deployed Edge Function URL ----
+        // This is a public endpoint URL, not a secret — the real Supabase
+        // URL/key live server-side inside the function itself and are never
+        // sent to this page.
+        const EDGE_FUNCTION_URL = 'https://YOUR-PROJECT-REF.supabase.co/functions/v1/prepare-bike-import';
+        // --------------------------------------------------------------------
 
         let selectedFile = null;
         let lastResults = [];
@@ -144,18 +146,15 @@
                     statusEl.textContent = `Parsed ${rows.length} bikes. Checking against bikemaster...`;
 
                     try {
-                        const res = await fetch(`${SUPABASE_URL}/rest/v1/rpc/prepare_bikemaster_import`, {
+                        const res = await fetch(EDGE_FUNCTION_URL, {
                             method: 'POST',
-                            headers: {
-                                'Content-Type': 'application/json',
-                                apikey: SUPABASE_ANON_KEY,
-                                Authorization: `Bearer ${SUPABASE_ANON_KEY}`,
-                            },
-                            body: JSON.stringify({p_rows: rows, p_filename: selectedFile.name}),
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ rows, filename: selectedFile.name }),
                         });
 
-                        if (!res.ok) throw new Error(await res.text());
-                        lastResults = await res.json();
+                        const payload = await res.json();
+                        if (!res.ok) throw new Error(payload.error || 'Request failed');
+                        lastResults = payload;
                         renderResults(lastResults);
                         statusEl.textContent = 'Done.';
                     } catch (err) {
@@ -193,8 +192,8 @@
                 .filter((r) => r.Status === 'NEW')
                 .map((r) => Object.fromEntries(cols.map((c) => [c, r[c] ?? ''])));
 
-            const csv = Papa.unparse(newRows, {columns: cols});
-            const blob = new Blob([csv], {type: 'text/csv'});
+            const csv = Papa.unparse(newRows, { columns: cols });
+            const blob = new Blob([csv], { type: 'text/csv' });
             const link = document.createElement('a');
             link.href = URL.createObjectURL(blob);
             link.download = 'bikemaster_new_bikes.csv';
